@@ -28,4 +28,4 @@ jobs:
           RAVEN_PROD_SECRET: ${{ secrets.RAVEN_PROD_SECRET }}
           RAVEN_DEV_SECRET:  ${{ secrets.RAVEN_DEV_SECRET }}
         run: |
-          pwsh ./Update_Jira_Bugs_From_VIN.ps1
+          pwsh ./TaskAsset.ps1
