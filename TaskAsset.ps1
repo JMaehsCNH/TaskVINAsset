@@ -173,7 +173,8 @@ function Get-RavenSystem {
     if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
       Write-Host "📦 PROD system error body:"
       Write-Host $_.ErrorDetails.Message
-    } else {
+    }
+    else {
       Write-Host "📝 PROD system exception:"
       Write-Host $_.Exception.Message
     }
@@ -198,14 +199,14 @@ function Get-RavenSystem {
     if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
       Write-Host "📦 DEV system error body:"
       Write-Host $_.ErrorDetails.Message
-    } else {
+    }
+    else {
       Write-Host "📝 DEV system exception:"
       Write-Host $_.Exception.Message
     }
     return $null
   }
 }
-
 
 function Get-RavenEnrichment {
   param(
@@ -227,6 +228,7 @@ function Get-RavenEnrichment {
 
   function Get-PropString {
     param($obj, [string[]]$Names)
+
     foreach ($n in $Names) {
       if ($obj -and $obj.PSObject.Properties.Name -contains $n) {
         $v = $obj.$n
@@ -235,13 +237,16 @@ function Get-RavenEnrichment {
         }
       }
     }
+
     return $null
   }
 
   function Resolve-RavenDeviceWithSystem {
     param([string]$AnyId)
 
-    if ([string]::IsNullOrWhiteSpace($AnyId)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($AnyId)) {
+      return $null
+    }
 
     Write-Host "🔎 Raven root lookup: deviceId='$AnyId'"
     $dev = Get-RavenDevice -DeviceId $AnyId
@@ -258,7 +263,6 @@ function Get-RavenEnrichment {
       return $dev
     }
 
-    # Retry with alternate ids from the device response
     $retryIds = @(
       (Get-PropString $dev @("externalDeviceId")),
       (Get-PropString $dev @("sid")),
@@ -269,7 +273,9 @@ function Get-RavenEnrichment {
     foreach ($rid in $retryIds) {
       Write-Host "🔁 Raven retry lookup using alternate id '$rid'"
       $retryDev = Get-RavenDevice -DeviceId $rid
-      if (-not $retryDev) { continue }
+      if (-not $retryDev) {
+        continue
+      }
 
       Write-Host "🧾 Raven retry raw:"
       Write-Host ($retryDev | ConvertTo-Json -Depth 20)
@@ -296,7 +302,6 @@ function Get-RavenEnrichment {
   Write-Host "🧠 Root model: '$rootModel'"
   Write-Host "🧠 Root systemId: '$systemId'"
 
-  # If still blank, try rowId directly as a system id experiment
   if ([string]::IsNullOrWhiteSpace($systemId)) {
     $rowId = Get-PropString $rootDev @("rowId")
     if (-not [string]::IsNullOrWhiteSpace($rowId)) {
@@ -304,13 +309,16 @@ function Get-RavenEnrichment {
       $sys = Get-RavenSystem -SystemId $rowId
       if ($sys) {
         Write-Host "✅ Raven system lookup returned data using rowId '$rowId'"
-      } else {
+      }
+      else {
         Write-Host "⚠️ Raven system lookup failed using rowId '$rowId'"
       }
-    } else {
+    }
+    else {
       $sys = $null
     }
-  } else {
+  }
+  else {
     $sys = Get-RavenSystem -SystemId $systemId
   }
 
@@ -345,54 +353,59 @@ function Get-RavenEnrichment {
   $deviceIds = @($deviceIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
   Write-Host "📦 Raven system child device ids found: $($deviceIds.Count)"
 
-foreach ($sid in $deviceIds) {
-  Write-Host "🔍 Raven child lookup: '$sid'"
-  $dev = Get-RavenDevice -DeviceId $sid
-  if (-not $dev) { continue }
+  foreach ($sid in $deviceIds) {
+    Write-Host "🔍 Raven child lookup: '$sid'"
+    $dev = Get-RavenDevice -DeviceId $sid
+    if (-not $dev) {
+      continue
+    }
 
-  Write-Host "🧾 Raven child raw:"
-  Write-Host ($dev | ConvertTo-Json -Depth 20)
+    Write-Host "🧾 Raven child raw:"
+    Write-Host ($dev | ConvertTo-Json -Depth 20)
 
-  $model = [string]$dev.model
-  $type  = [string]$dev.type
-  $sw    = [string]$dev.softwareVersion
+    $model = [string]$dev.model
+    $type  = [string]$dev.type
+    $sw    = [string]$dev.softwareVersion
 
-  $barcodeCandidate = $null
-  if ($null -ne $dev.barcode -and -not [string]::IsNullOrWhiteSpace([string]$dev.barcode)) {
-    $barcodeCandidate = [string]$dev.barcode
-  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.externalDeviceId)) {
-    $barcodeCandidate = [string]$dev.externalDeviceId
-  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.cnhHardwareId)) {
-    $barcodeCandidate = [string]$dev.cnhHardwareId
-  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.serialNumber)) {
-    $barcodeCandidate = [string]$dev.serialNumber
+    $barcodeCandidate = $null
+    if ($null -ne $dev.barcode -and -not [string]::IsNullOrWhiteSpace([string]$dev.barcode)) {
+      $barcodeCandidate = [string]$dev.barcode
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.externalDeviceId)) {
+      $barcodeCandidate = [string]$dev.externalDeviceId
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.cnhHardwareId)) {
+      $barcodeCandidate = [string]$dev.cnhHardwareId
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.serialNumber)) {
+      $barcodeCandidate = [string]$dev.serialNumber
+    }
+
+    Write-Host "   model='$model'"
+    Write-Host "   type='$type'"
+    Write-Host "   barcodeCandidate='$barcodeCandidate'"
+    Write-Host "   versionCandidate='$sw'"
+
+    if (-not $out.AntalyaSw -and ($type -match '^antalya$' -or $model -match 'ANTALYA|CNH03244')) {
+      $out.AntalyaBarcode = $barcodeCandidate
+      $out.AntalyaSw      = $sw
+      Write-Host "✅ Matched ANTALYA"
+      continue
+    }
+
+    if (-not $out.PegasusSw -and ($model -match 'PEGASUS|CNH03201' -or $type -match 'pegasus|fieldcomputer')) {
+      $out.PegasusBarcode = $barcodeCandidate
+      $out.PegasusSw      = $sw
+      Write-Host "✅ Matched PEGASUS"
+      continue
+    }
   }
 
-  Write-Host "   model='$model'"
-  Write-Host "   type='$type'"
-  Write-Host "   barcodeCandidate='$barcodeCandidate'"
-  Write-Host "   versionCandidate='$sw'"
+  Write-Host "🧠 Post-loop Raven enrichment object:"
+  Write-Host (([pscustomobject]$out) | ConvertTo-Json -Depth 10)
 
-  if (-not $out.AntalyaSw -and ($type -match '^antalya$' -or $model -match 'ANTALYA|CNH03244')) {
-    $out.AntalyaBarcode = $barcodeCandidate
-    $out.AntalyaSw      = $sw
-    Write-Host "✅ Matched ANTALYA"
-    continue
-  }
-
-  if (-not $out.PegasusSw -and ($model -match 'PEGASUS|CNH03201' -or $type -match 'pegasus|fieldcomputer')) {
-    $out.PegasusBarcode = $barcodeCandidate
-    $out.PegasusSw      = $sw
-    Write-Host "✅ Matched PEGASUS"
-    continue
-  }
+  return [pscustomobject]$out
 }
-
-
-Write-Host "🧠 Post-loop Raven enrichment object:"
-Write-Host (([pscustomobject]$out) | ConvertTo-Json -Depth 10)
-
-return [pscustomobject]$out
 
 # --- Quick secret sanity ---
 Write-Host "🔐 Email: $jiraEmail"
