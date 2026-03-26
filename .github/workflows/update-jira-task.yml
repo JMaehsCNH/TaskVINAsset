@@ -1,0 +1,31 @@
+name: Update Jira Bugs from VIN
+
+on:
+  workflow_dispatch:  # Manual trigger from GitHub UI
+  schedule:
+    - cron: '0 14 * * *'  # 8 AM CST
+    - cron: '0 22 * * *'  # 4 PM CST
+
+jobs:
+  run-update:
+    runs-on: windows-latest  # Needed to run PowerShell on Windows
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run PowerShell script to update Jira Bugs
+        env:
+          jiraEmail: john.maehs@cnh.com
+          jiraToken: ${{ secrets.JIRA_TOKEN }}
+
+          # GSS
+          subsKeyGSSProd: ${{ secrets.SUBS_KEY_PROD }}
+          subsKeyGSSMkt:  ${{ secrets.SUBS_KEY_MKT }}
+
+          # Raven Connectivity
+          RAVEN_S2S_CALLER:  ${{ secrets.RAVEN_S2S_CALLER }}
+          RAVEN_PROD_SECRET: ${{ secrets.RAVEN_PROD_SECRET }}
+          RAVEN_DEV_SECRET:  ${{ secrets.RAVEN_DEV_SECRET }}
+        run: |
+          pwsh ./TaskAsset.ps1
