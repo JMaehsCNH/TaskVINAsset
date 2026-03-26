@@ -190,10 +190,12 @@ function Get-RavenEnrichment {
       return $dev
     }
 
+    # Retry with alternate ids from the device response
     $retryIds = @(
       (Get-PropString $dev @("externalDeviceId")),
       (Get-PropString $dev @("sid")),
-      (Get-PropString $dev @("rowId"))
+      (Get-PropString $dev @("rowId")),
+      (Get-PropString $dev @("barcode"))
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 
     foreach ($rid in $retryIds) {
@@ -218,6 +220,94 @@ function Get-RavenEnrichment {
   if (-not $rootDev) {
     return [pscustomobject]$out
   }
+
+  $out.RavenRootSoftwareVersion = Get-PropString $rootDev @("softwareVersion","version")
+  $rootModel = Get-PropString $rootDev @("model")
+  $systemId  = Get-PropString $rootDev @("systemId","systemID")
+
+  Write-Host "🧠 Root model: '$rootModel'"
+  Write-Host "🧠 Root systemId: '$systemId'"
+
+  # If still blank, try rowId directly as a system id experiment
+  if ([string]::IsNullOrWhiteSpace($systemId)) {
+    $rowId = Get-PropString $rootDev @("rowId")
+    if (-not [string]::IsNullOrWhiteSpace($rowId)) {
+      Write-Host "🧪 systemId still blank; trying rowId '$rowId' as system lookup"
+      $sys = Get-RavenSystem -SystemId $rowId
+      if ($sys) {
+        Write-Host "✅ Raven system lookup returned data using rowId '$rowId'"
+      } else {
+        Write-Host "⚠️ Raven system lookup failed using rowId '$rowId'"
+      }
+    } else {
+      $sys = $null
+    }
+  } else {
+    $sys = Get-RavenSystem -SystemId $systemId
+  }
+
+  if (-not $sys) {
+    Write-Host "⚠️ No Raven system data available."
+    return [pscustomobject]$out
+  }
+
+  Write-Host "🧾 Raven system raw:"
+  Write-Host ($sys | ConvertTo-Json -Depth 20)
+
+  $deviceIds = @()
+
+  if ($sys.PSObject.Properties.Name -contains "devices" -and $sys.devices) {
+    foreach ($d in $sys.devices) {
+      if ($d -is [string]) {
+        if (-not [string]::IsNullOrWhiteSpace($d)) {
+          $deviceIds += [string]$d
+        }
+      }
+      else {
+        foreach ($propName in @("deviceId","id","externalId","externalDeviceId","sid","rowId","barcode")) {
+          if ($d.PSObject.Properties.Name -contains $propName -and -not [string]::IsNullOrWhiteSpace([string]$d.$propName)) {
+            $deviceIds += [string]$d.$propName
+            break
+          }
+        }
+      }
+    }
+  }
+
+  $deviceIds = @($deviceIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+  Write-Host "📦 Raven system child device ids found: $($deviceIds.Count)"
+
+  foreach ($sid in $deviceIds) {
+    Write-Host "🔍 Raven child lookup: '$sid'"
+    $dev = Get-RavenDevice -DeviceId $sid
+    if (-not $dev) { continue }
+
+    Write-Host "🧾 Raven child raw:"
+    Write-Host ($dev | ConvertTo-Json -Depth 20)
+
+    $m  = Get-PropString $dev @("model")
+    $bc = Get-PropString $dev @("barcode","externalDeviceId","externalId","gnssSerialNumber","gnssSerial","serialNumber","name")
+    $sv = Get-PropString $dev @("softwareVersion","version")
+
+    if (-not $out.AntalyaBarcode -and $m -match "ANTALYA") {
+      $out.AntalyaBarcode = $bc
+      $out.AntalyaSw      = $sv
+      Write-Host "✅ Matched ANTALYA"
+    }
+
+    if (-not $out.PegasusBarcode -and $m -match "PEGASUS") {
+      $out.PegasusBarcode = $bc
+      $out.PegasusSw      = $sv
+      Write-Host "✅ Matched PEGASUS"
+    }
+
+    if ($out.AntalyaBarcode -and $out.PegasusBarcode) {
+      break
+    }
+  }
+
+  return [pscustomobject]$out
+}
 
   $out.RavenRootSoftwareVersion = Get-PropString $rootDev @("softwareVersion","version")
   $rootModel = Get-PropString $rootDev @("model")
