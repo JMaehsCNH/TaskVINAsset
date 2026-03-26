@@ -205,6 +205,7 @@ function Get-RavenSystem {
     return $null
   }
 }
+}
 
 function Get-RavenEnrichment {
   param(
@@ -386,6 +387,7 @@ foreach ($sid in $deviceIds) {
     continue
   }
 }
+
 
 Write-Host "🧠 Post-loop Raven enrichment object:"
 Write-Host (([pscustomobject]$out) | ConvertTo-Json -Depth 10)
