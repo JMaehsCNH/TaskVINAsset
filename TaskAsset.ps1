@@ -74,7 +74,9 @@ if ([string]::IsNullOrWhiteSpace($env:RAVEN_DEV_SECRET)) {
   Write-Host "⚠️ RAVEN_DEV_SECRET is empty"
 }
 
-$ravenBaseUrl = "https://connectivity.raven.engineering"
+# === RAVEN CONFIG ===
+$ravenBaseUrlDev = "https://connectivity.raven.engineering"
+$ravenBaseUrlProd  = "https://connectivity.ravenslingshot.com/v1/oas"   
 
 $ravenHeadersProd = @{
   "x-s2s-caller" = $env:RAVEN_S2S_CALLER
@@ -91,31 +93,25 @@ $ravenHeadersDev = @{
 function Get-RavenDevice {
   param([Parameter(Mandatory=$true)][string]$DeviceId)
 
-  $url = "$ravenBaseUrl/v1/device/$DeviceId"
-  Write-Host "🌐 Raven GET: $url"
+  $urlProd = "$ravenBaseUrlProd/v1/device/$DeviceId"
+  $urlDev  = "$ravenBaseUrlDev/v1/device/$DeviceId"
 
+  Write-Host "🌐 Raven PROD GET: $urlProd"
   try {
     Write-Host "🔐 Trying PROD headers..."
-    $resp = Invoke-WebRequest -Uri $url -Headers $ravenHeadersProd -Method Get -ErrorAction Stop
-
+    $resp = Invoke-WebRequest -Uri $urlProd -Headers $ravenHeadersProd -Method Get -ErrorAction Stop
     Write-Host "✅ PROD succeeded"
-    Write-Host "📡 PROD Status: $($resp.StatusCode)"
-    Write-Host "📦 PROD RAW BODY:"
+    Write-Host "📡 PROD status: $($resp.StatusCode)"
+    Write-Host "📦 PROD raw body:"
     Write-Host $resp.Content
-
     return ($resp.Content | ConvertFrom-Json)
   }
   catch {
     Write-Host "❌ PROD failed for device '$DeviceId'"
     if ($_.Exception.Response) {
-      try {
-        Write-Host "📡 PROD status code: $([int]$_.Exception.Response.StatusCode)"
-      } catch {}
-      try {
-        Write-Host "📡 PROD reason: $($_.Exception.Response.ReasonPhrase)"
-      } catch {}
+      try { Write-Host "📡 PROD status code: $([int]$_.Exception.Response.StatusCode)" } catch {}
+      try { Write-Host "📡 PROD reason: $($_.Exception.Response.ReasonPhrase)" } catch {}
     }
-
     if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
       Write-Host "📦 PROD error body:"
       Write-Host $_.ErrorDetails.Message
@@ -123,32 +119,24 @@ function Get-RavenDevice {
       Write-Host "📝 PROD exception:"
       Write-Host $_.Exception.Message
     }
-
-    Write-Host "⚠️ PROD failed, trying DEV..."
   }
 
+  Write-Host "🌐 Raven DEV GET: $urlDev"
   try {
     Write-Host "🔐 Trying DEV headers..."
-    $resp = Invoke-WebRequest -Uri $url -Headers $ravenHeadersDev -Method Get -ErrorAction Stop
-
+    $resp = Invoke-WebRequest -Uri $urlDev -Headers $ravenHeadersDev -Method Get -ErrorAction Stop
     Write-Host "✅ DEV succeeded"
-    Write-Host "📡 DEV Status: $($resp.StatusCode)"
-    Write-Host "📦 DEV RAW BODY:"
+    Write-Host "📡 DEV status: $($resp.StatusCode)"
+    Write-Host "📦 DEV raw body:"
     Write-Host $resp.Content
-
     return ($resp.Content | ConvertFrom-Json)
   }
   catch {
     Write-Host "❌ DEV failed for device '$DeviceId'"
     if ($_.Exception.Response) {
-      try {
-        Write-Host "📡 DEV status code: $([int]$_.Exception.Response.StatusCode)"
-      } catch {}
-      try {
-        Write-Host "📡 DEV reason: $($_.Exception.Response.ReasonPhrase)"
-      } catch {}
+      try { Write-Host "📡 DEV status code: $([int]$_.Exception.Response.StatusCode)" } catch {}
+      try { Write-Host "📡 DEV reason: $($_.Exception.Response.ReasonPhrase)" } catch {}
     }
-
     if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
       Write-Host "📦 DEV error body:"
       Write-Host $_.ErrorDetails.Message
@@ -156,7 +144,6 @@ function Get-RavenDevice {
       Write-Host "📝 DEV exception:"
       Write-Host $_.Exception.Message
     }
-
     return $null
   }
 }
@@ -164,31 +151,25 @@ function Get-RavenDevice {
 function Get-RavenSystem {
   param([Parameter(Mandatory=$true)][string]$SystemId)
 
-  $url = "$ravenBaseUrl/v1/system/$SystemId"
-  Write-Host "🌐 Raven SYSTEM GET: $url"
+  $urlProd = "$ravenBaseUrlProd/v1/system/$SystemId"
+  $urlDev  = "$ravenBaseUrlDev/v1/system/$SystemId"
 
+  Write-Host "🌐 Raven PROD SYSTEM GET: $urlProd"
   try {
     Write-Host "🔐 Trying PROD headers for system..."
-    $resp = Invoke-WebRequest -Uri $url -Headers $ravenHeadersProd -Method Get -ErrorAction Stop
-
+    $resp = Invoke-WebRequest -Uri $urlProd -Headers $ravenHeadersProd -Method Get -ErrorAction Stop
     Write-Host "✅ PROD system succeeded"
     Write-Host "📡 PROD system status: $($resp.StatusCode)"
-    Write-Host "📦 PROD SYSTEM RAW BODY:"
+    Write-Host "📦 PROD system raw body:"
     Write-Host $resp.Content
-
     return ($resp.Content | ConvertFrom-Json)
   }
   catch {
     Write-Host "❌ PROD system failed for '$SystemId'"
     if ($_.Exception.Response) {
-      try {
-        Write-Host "📡 PROD system status code: $([int]$_.Exception.Response.StatusCode)"
-      } catch {}
-      try {
-        Write-Host "📡 PROD system reason: $($_.Exception.Response.ReasonPhrase)"
-      } catch {}
+      try { Write-Host "📡 PROD system status code: $([int]$_.Exception.Response.StatusCode)" } catch {}
+      try { Write-Host "📡 PROD system reason: $($_.Exception.Response.ReasonPhrase)" } catch {}
     }
-
     if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
       Write-Host "📦 PROD system error body:"
       Write-Host $_.ErrorDetails.Message
@@ -196,32 +177,24 @@ function Get-RavenSystem {
       Write-Host "📝 PROD system exception:"
       Write-Host $_.Exception.Message
     }
-
-    Write-Host "⚠️ PROD system failed, trying DEV..."
   }
 
+  Write-Host "🌐 Raven DEV SYSTEM GET: $urlDev"
   try {
     Write-Host "🔐 Trying DEV headers for system..."
-    $resp = Invoke-WebRequest -Uri $url -Headers $ravenHeadersDev -Method Get -ErrorAction Stop
-
+    $resp = Invoke-WebRequest -Uri $urlDev -Headers $ravenHeadersDev -Method Get -ErrorAction Stop
     Write-Host "✅ DEV system succeeded"
     Write-Host "📡 DEV system status: $($resp.StatusCode)"
-    Write-Host "📦 DEV SYSTEM RAW BODY:"
+    Write-Host "📦 DEV system raw body:"
     Write-Host $resp.Content
-
     return ($resp.Content | ConvertFrom-Json)
   }
   catch {
     Write-Host "❌ DEV system failed for '$SystemId'"
     if ($_.Exception.Response) {
-      try {
-        Write-Host "📡 DEV system status code: $([int]$_.Exception.Response.StatusCode)"
-      } catch {}
-      try {
-        Write-Host "📡 DEV system reason: $($_.Exception.Response.ReasonPhrase)"
-      } catch {}
+      try { Write-Host "📡 DEV system status code: $([int]$_.Exception.Response.StatusCode)" } catch {}
+      try { Write-Host "📡 DEV system reason: $($_.Exception.Response.ReasonPhrase)" } catch {}
     }
-
     if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
       Write-Host "📦 DEV system error body:"
       Write-Host $_.ErrorDetails.Message
@@ -229,7 +202,6 @@ function Get-RavenSystem {
       Write-Host "📝 DEV system exception:"
       Write-Host $_.Exception.Message
     }
-
     return $null
   }
 }
