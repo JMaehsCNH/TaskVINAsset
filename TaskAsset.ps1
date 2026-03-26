@@ -281,19 +281,22 @@ if ([string]::IsNullOrWhiteSpace($jiraToken)) {
 
 # === QUERY JIRA ISSUES (new /search/jql with nextPageToken) ===
 $jql = 'project = PREC AND issuetype in ("Customer Task", "PV Task") AND statusCategory != Done'
+$searchUrl = "$jiraBaseUrl/rest/api/3/search/jql"
+
 $body = @{
   jql        = $jql
   maxResults = 100
-  fields = @(
-  "customfield_13087", # VIN
-  "customfield_13088", # CEQ
-  "customfield_13089", # Company
-  "customfield_13094"  # TDAC
-)
+  fields     = @(
+    "customfield_13087", # VIN
+    "customfield_13088", # CEQ
+    "customfield_13089", # Company
+    "customfield_13094"  # TDAC
+  )
 }
 
 Write-Host "🔎 JQL: $jql"
 Write-Host "🌐 Site: $jiraBaseUrl"
+Write-Host "🔗 Search URL: $searchUrl"
 Write-Host "👤 User: $jiraEmail"
 
 $allIssues = @()
@@ -307,6 +310,7 @@ do {
 
   $json = $payload | ConvertTo-Json -Depth 5
   Write-Host "`n📄 Search page $searchPage (nextPageToken=$nextPageToken)"
+
   try {
     $resp = Invoke-RestMethod -Uri $searchUrl -Method Post -Headers $headers -Body $json
   } catch {
@@ -315,7 +319,7 @@ do {
   }
 
   $count = @($resp.issues).Count
-  Write-Host "➡️  Retrieved $count issues in this page."
+  Write-Host "➡️ Retrieved $count issues in this page."
   if ($resp.issues) { $allIssues += $resp.issues }
 
   if ($resp.isLast -eq $true) {
