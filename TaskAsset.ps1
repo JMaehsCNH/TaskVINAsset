@@ -45,7 +45,7 @@ $jiraBaseUrl = "https://cnhpd.atlassian.net"
 $jiraEmail   = "john.maehs@cnh.com"
 $jiraToken   = $env:jiraToken          # GitHub secret
 $projectKey  = "PREC"
-$issueType   in ("Customer Task", "PV Task")
+$issueTypeClause = '("Customer Task", "PV Task")'
 
 # GSS External API Keys
 $subsKeyGSSProd = $env:subsKeyGSSProd
