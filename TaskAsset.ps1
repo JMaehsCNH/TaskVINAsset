@@ -60,6 +60,19 @@ $headers = @{
 $headerExtProd = @{ 'Ocp-Apim-Subscription-Key' = $subsKeyGSSProd }
 $headerExtMkt  = @{ 'Ocp-Apim-Subscription-Key' = $subsKeyGSSMkt }
 
+Write-Host "🪪 RAVEN_S2S_CALLER: $($env:RAVEN_S2S_CALLER)"
+Write-Host "🪪 RAVEN_PROD_SECRET length: $($env:RAVEN_PROD_SECRET.Length)"
+Write-Host "🪪 RAVEN_DEV_SECRET length: $($env:RAVEN_DEV_SECRET.Length)"
+
+if ([string]::IsNullOrWhiteSpace($env:RAVEN_S2S_CALLER)) {
+  throw "RAVEN_S2S_CALLER is empty"
+}
+if ([string]::IsNullOrWhiteSpace($env:RAVEN_PROD_SECRET)) {
+  throw "RAVEN_PROD_SECRET is empty"
+}
+if ([string]::IsNullOrWhiteSpace($env:RAVEN_DEV_SECRET)) {
+  Write-Host "⚠️ RAVEN_DEV_SECRET is empty"
+}
 
 $ravenBaseUrl = "https://connectivity.raven.engineering"
 
