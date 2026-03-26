@@ -345,37 +345,59 @@ function Get-RavenEnrichment {
   Write-Host "📦 Raven system child device ids found: $($deviceIds.Count)"
 
   foreach ($sid in $deviceIds) {
-    Write-Host "🔍 Raven child lookup: '$sid'"
-    $dev = Get-RavenDevice -DeviceId $sid
-    if (-not $dev) { continue }
+  Write-Host "🔍 Raven child lookup: '$sid'"
+  $dev = Get-RavenDevice -DeviceId $sid
+  if (-not $dev) { continue }
 
-    Write-Host "🧾 Raven child raw:"
-    Write-Host ($dev | ConvertTo-Json -Depth 20)
+  Write-Host "🧾 Raven child raw:"
+  Write-Host ($dev | ConvertTo-Json -Depth 20)
 
-    $m  = Get-PropString $dev @("model")
-    $bc = Get-PropString $dev @("barcode","externalDeviceId","externalId","gnssSerialNumber","gnssSerial","serialNumber","name")
-    $sv = Get-PropString $dev @("softwareVersion","version")
+  $model = [string]$dev.model
+  $type  = [string]$dev.type
+  $sw    = [string]$dev.softwareVersion
 
-    if (-not $out.AntalyaBarcode -and $m -match "ANTALYA") {
-      $out.AntalyaBarcode = $bc
-      $out.AntalyaSw      = $sv
-      Write-Host "✅ Matched ANTALYA"
-    }
-
-    if (-not $out.PegasusBarcode -and $m -match "PEGASUS") {
-      $out.PegasusBarcode = $bc
-      $out.PegasusSw      = $sv
-      Write-Host "✅ Matched PEGASUS"
-    }
-
-    if ($out.AntalyaBarcode -and $out.PegasusBarcode) {
-      break
-    }
+  $barcodeCandidate = $null
+  if ($null -ne $dev.barcode -and -not [string]::IsNullOrWhiteSpace([string]$dev.barcode)) {
+    $barcodeCandidate = [string]$dev.barcode
+  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.externalDeviceId)) {
+    $barcodeCandidate = [string]$dev.externalDeviceId
+  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.cnhHardwareId)) {
+    $barcodeCandidate = [string]$dev.cnhHardwareId
+  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.serialNumber)) {
+    $barcodeCandidate = [string]$dev.serialNumber
   }
 
-  return [pscustomobject]$out
-}
+  Write-Host "   model='$model'"
+  Write-Host "   type='$type'"
+  Write-Host "   barcodeCandidate='$barcodeCandidate'"
+  Write-Host "   versionCandidate='$sw'"
 
+  # Antalya
+  if (
+    -not $out.AntalyaSw -and (
+      $type -match '^antalya$' -or
+      $model -match 'ANTALYA|CNH03244'
+    )
+  ) {
+    $out.AntalyaBarcode = $barcodeCandidate
+    $out.AntalyaSw      = $sw
+    Write-Host "✅ Matched ANTALYA"
+    continue
+  }
+
+  # Pegasus
+  if (
+    -not $out.PegasusSw -and (
+      $model -match 'PEGASUS|CNH03201' -or
+      $type -match 'pegasus|fieldcomputer'
+    )
+  ) {
+    $out.PegasusBarcode = $barcodeCandidate
+    $out.PegasusSw      = $sw
+    Write-Host "✅ Matched PEGASUS"
+    continue
+  }
+}
 # --- Quick secret sanity ---
 Write-Host "🔐 Email: $jiraEmail"
 if ([string]::IsNullOrWhiteSpace($jiraToken)) {
