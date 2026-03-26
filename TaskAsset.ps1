@@ -77,20 +77,66 @@ $ravenHeadersDev = @{
 
 function Get-RavenDevice {
   param([Parameter(Mandatory=$true)][string]$DeviceId)
-  $url = "$ravenBaseUrl/v1/device/$DeviceId"
 
-  try { return Invoke-RestMethod -Uri $url -Headers $ravenHeadersProd -Method Get -ErrorAction Stop } catch {}
-  try { return Invoke-RestMethod -Uri $url -Headers $ravenHeadersDev  -Method Get -ErrorAction Stop } catch {}
-  return $null
+  $url = "$ravenBaseUrl/v1/device/$DeviceId"
+  Write-Host "🌐 Raven GET: $url"
+
+  try {
+    $resp = Invoke-WebRequest -Uri $url -Headers $ravenHeadersProd -Method Get -ErrorAction Stop
+
+    Write-Host "📡 Status: $($resp.StatusCode)"
+    Write-Host "📦 RAW BODY:"
+    Write-Host $resp.Content
+
+    return ($resp.Content | ConvertFrom-Json)
+  } catch {
+    Write-Host "⚠️ PROD failed, trying DEV..."
+  }
+
+  try {
+    $resp = Invoke-WebRequest -Uri $url -Headers $ravenHeadersDev -Method Get -ErrorAction Stop
+
+    Write-Host "📡 Status (DEV): $($resp.StatusCode)"
+    Write-Host "📦 RAW BODY (DEV):"
+    Write-Host $resp.Content
+
+    return ($resp.Content | ConvertFrom-Json)
+  } catch {
+    Show-HttpError $_ "Raven device lookup failed for $DeviceId"
+    return $null
+  }
 }
 
 function Get-RavenSystem {
   param([Parameter(Mandatory=$true)][string]$SystemId)
-  $url = "$ravenBaseUrl/v1/system/$SystemId"
 
-  try { return Invoke-RestMethod -Uri $url -Headers $ravenHeadersProd -Method Get -ErrorAction Stop } catch {}
-  try { return Invoke-RestMethod -Uri $url -Headers $ravenHeadersDev  -Method Get -ErrorAction Stop } catch {}
-  return $null
+  $url = "$ravenBaseUrl/v1/system/$SystemId"
+  Write-Host "🌐 Raven SYSTEM GET: $url"
+
+  try {
+    $resp = Invoke-WebRequest -Uri $url -Headers $ravenHeadersProd -Method Get -ErrorAction Stop
+
+    Write-Host "📡 Status: $($resp.StatusCode)"
+    Write-Host "📦 RAW SYSTEM BODY:"
+    Write-Host $resp.Content
+
+    return ($resp.Content | ConvertFrom-Json)
+  } catch {
+    Write-Host "⚠️ PROD system failed, trying DEV..."
+  }
+
+  try {
+    $resp = Invoke-WebRequest -Uri $url -Headers $ravenHeadersDev -Method Get -ErrorAction Stop
+
+    Write-Host "📡 Status (DEV): $($resp.StatusCode)"
+    Write-Host "📦 RAW SYSTEM BODY (DEV):"
+    Write-Host $resp.Content
+
+    return ($resp.Content | ConvertFrom-Json)
+  } catch {
+    Show-HttpError $_ "Raven system lookup failed for $SystemId"
+    return $null
+  }
 }
 
 function Get-RavenEnrichment {
