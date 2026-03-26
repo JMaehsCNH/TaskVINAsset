@@ -344,61 +344,53 @@ function Get-RavenEnrichment {
   $deviceIds = @($deviceIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
   Write-Host "📦 Raven system child device ids found: $($deviceIds.Count)"
 
-  foreach ($sid in $deviceIds) {
-    Write-Host "🔍 Raven child lookup: '$sid'"
-    $dev = Get-RavenDevice -DeviceId $sid
-    if (-not $dev) { continue }
-  
-    Write-Host "🧾 Raven child raw:"
-    Write-Host ($dev | ConvertTo-Json -Depth 20)
-  
-    $model = [string]$dev.model
-    $type  = [string]$dev.type
-    $sw    = [string]$dev.softwareVersion
-  
-    $barcodeCandidate = $null
-    if ($null -ne $dev.barcode -and -not [string]::IsNullOrWhiteSpace([string]$dev.barcode)) {
-      $barcodeCandidate = [string]$dev.barcode
-    } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.externalDeviceId)) {
-      $barcodeCandidate = [string]$dev.externalDeviceId
-    } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.cnhHardwareId)) {
-      $barcodeCandidate = [string]$dev.cnhHardwareId
-    } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.serialNumber)) {
-      $barcodeCandidate = [string]$dev.serialNumber
-    }
-  
-    Write-Host "   model='$model'"
-    Write-Host "   type='$type'"
-    Write-Host "   barcodeCandidate='$barcodeCandidate'"
-    Write-Host "   versionCandidate='$sw'"
-  
-    # Antalya
-    if (
-      -not $out.AntalyaSw -and (
-        $type -match '^antalya$' -or
-        $model -match 'ANTALYA|CNH03244'
-      )
-    ) {
-      $out.AntalyaBarcode = $barcodeCandidate
-      $out.AntalyaSw      = $sw
-      Write-Host "✅ Matched ANTALYA"
-      continue
-    }
-  
-    # Pegasus
-    if (
-      -not $out.PegasusSw -and (
-        $model -match 'PEGASUS|CNH03201' -or
-        $type -match 'pegasus|fieldcomputer'
-      )
-    ) {
-      $out.PegasusBarcode = $barcodeCandidate
-      $out.PegasusSw      = $sw
-      Write-Host "✅ Matched PEGASUS"
-      continue
-    }
+foreach ($sid in $deviceIds) {
+  Write-Host "🔍 Raven child lookup: '$sid'"
+  $dev = Get-RavenDevice -DeviceId $sid
+  if (-not $dev) { continue }
+
+  Write-Host "🧾 Raven child raw:"
+  Write-Host ($dev | ConvertTo-Json -Depth 20)
+
+  $model = [string]$dev.model
+  $type  = [string]$dev.type
+  $sw    = [string]$dev.softwareVersion
+
+  $barcodeCandidate = $null
+  if ($null -ne $dev.barcode -and -not [string]::IsNullOrWhiteSpace([string]$dev.barcode)) {
+    $barcodeCandidate = [string]$dev.barcode
+  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.externalDeviceId)) {
+    $barcodeCandidate = [string]$dev.externalDeviceId
+  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.cnhHardwareId)) {
+    $barcodeCandidate = [string]$dev.cnhHardwareId
+  } elseif (-not [string]::IsNullOrWhiteSpace([string]$dev.serialNumber)) {
+    $barcodeCandidate = [string]$dev.serialNumber
+  }
+
+  Write-Host "   model='$model'"
+  Write-Host "   type='$type'"
+  Write-Host "   barcodeCandidate='$barcodeCandidate'"
+  Write-Host "   versionCandidate='$sw'"
+
+  if (-not $out.AntalyaSw -and ($type -match '^antalya$' -or $model -match 'ANTALYA|CNH03244')) {
+    $out.AntalyaBarcode = $barcodeCandidate
+    $out.AntalyaSw      = $sw
+    Write-Host "✅ Matched ANTALYA"
+    continue
+  }
+
+  if (-not $out.PegasusSw -and ($model -match 'PEGASUS|CNH03201' -or $type -match 'pegasus|fieldcomputer')) {
+    $out.PegasusBarcode = $barcodeCandidate
+    $out.PegasusSw      = $sw
+    Write-Host "✅ Matched PEGASUS"
+    continue
   }
 }
+
+Write-Host "🧠 Post-loop Raven enrichment object:"
+Write-Host (([pscustomobject]$out) | ConvertTo-Json -Depth 10)
+
+return [pscustomobject]$out
 
 # --- Quick secret sanity ---
 Write-Host "🔐 Email: $jiraEmail"
