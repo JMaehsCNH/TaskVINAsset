@@ -104,49 +104,167 @@ function Get-RavenEnrichment {
   #  - PegasusBarcode, PegasusSw
   $out = [ordered]@{
     RavenRootSoftwareVersion = $null
-    AntalyaBarcode = $null
-    AntalyaSw      = $null
-    PegasusBarcode = $null
-    PegasusSw      = $null
+    AntalyaBarcode           = $null
+    AntalyaSw                = $null
+    PegasusBarcode           = $null
+    PegasusSw                = $null
   }
 
-  if ([string]::IsNullOrWhiteSpace($RootDeviceId)) { return [pscustomobject]$out }
-
-  $rootDev = Get-RavenDevice -DeviceId $RootDeviceId
-  if (-not $rootDev) { return [pscustomobject]$out }
-
-  if ($rootDev.softwareVersion) { $out.RavenRootSoftwareVersion = [string]$rootDev.softwareVersion }
-
-  $rootModel = [string]$rootDev.model
-  $systemId  = [string]$rootDev.systemId
-  if ($rootModel -notmatch "GEN3" -or [string]::IsNullOrWhiteSpace($systemId)) {
+  if ([string]::IsNullOrWhiteSpace($RootDeviceId)) {
+    Write-Host "⚠️ Get-RavenEnrichment: RootDeviceId is blank."
     return [pscustomobject]$out
   }
 
+  Write-Host "🔎 Raven root lookup: deviceId='$RootDeviceId'"
+  $rootDev = Get-RavenDevice -DeviceId $RootDeviceId
+  if (-not $rootDev) {
+    Write-Host "⚠️ Raven root device not found for '$RootDeviceId'"
+    return [pscustomobject]$out
+  }
+
+  Write-Host "🧾 Raven root raw:"
+  Write-Host ($rootDev | ConvertTo-Json -Depth 20)
+
+  # Root software version - support multiple possible property names
+  $rootSw = $null
+  if ($rootDev.PSObject.Properties.Name -contains "softwareVersion" -and -not [string]::IsNullOrWhiteSpace([string]$rootDev.softwareVersion)) {
+    $rootSw = [string]$rootDev.softwareVersion
+  }
+  elseif ($rootDev.PSObject.Properties.Name -contains "version" -and -not [string]::IsNullOrWhiteSpace([string]$rootDev.version)) {
+    $rootSw = [string]$rootDev.version
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($rootSw)) {
+    $out.RavenRootSoftwareVersion = $rootSw
+  }
+
+  $rootModel = [string]$rootDev.model
+  $systemId  = $null
+
+  if ($rootDev.PSObject.Properties.Name -contains "systemId") {
+    $systemId = [string]$rootDev.systemId
+  }
+  elseif ($rootDev.PSObject.Properties.Name -contains "systemID") {
+    $systemId = [string]$rootDev.systemID
+  }
+
+  Write-Host "🧠 Root model: '$rootModel'"
+  Write-Host "🧠 Root systemId: '$systemId'"
+
+  if ([string]::IsNullOrWhiteSpace($systemId)) {
+    Write-Host "⚠️ No systemId returned from Raven root device."
+    return [pscustomobject]$out
+  }
+
+  # Keep GEN3 gate, but only warn instead of hard fail if model text changes
+  if ($rootModel -notmatch "GEN3|Gen 3") {
+    Write-Host "⚠️ Root model does not contain GEN3/Gen 3. Continuing anyway because systemId exists."
+  }
+
   $sys = Get-RavenSystem -SystemId $systemId
-  if (-not $sys -or -not $sys.devices) { return [pscustomobject]$out }
+  if (-not $sys) {
+    Write-Host "⚠️ Raven system lookup returned null for systemId '$systemId'"
+    return [pscustomobject]$out
+  }
 
-  foreach ($sid in $sys.devices) {
-    if ([string]::IsNullOrWhiteSpace([string]$sid)) { continue }
+  Write-Host "🧾 Raven system raw:"
+  Write-Host ($sys | ConvertTo-Json -Depth 20)
 
-    $dev = Get-RavenDevice -DeviceId ([string]$sid)
-    if (-not $dev) { continue }
+  $deviceIds = @()
 
-    $m  = [string]$dev.model
-    $bc = $dev.barcode
-    $sv = [string]$dev.softwareVersion
+  if ($sys.PSObject.Properties.Name -contains "devices" -and $sys.devices) {
+    # Sometimes devices is an array of ids, sometimes objects
+    foreach ($d in $sys.devices) {
+      if ($d -is [string]) {
+        if (-not [string]::IsNullOrWhiteSpace($d)) {
+          $deviceIds += [string]$d
+        }
+      }
+      elseif ($d.PSObject.Properties.Name -contains "deviceId" -and -not [string]::IsNullOrWhiteSpace([string]$d.deviceId)) {
+        $deviceIds += [string]$d.deviceId
+      }
+      elseif ($d.PSObject.Properties.Name -contains "id" -and -not [string]::IsNullOrWhiteSpace([string]$d.id)) {
+        $deviceIds += [string]$d.id
+      }
+      elseif ($d.PSObject.Properties.Name -contains "externalId" -and -not [string]::IsNullOrWhiteSpace([string]$d.externalId)) {
+        $deviceIds += [string]$d.externalId
+      }
+    }
+  }
+
+  $deviceIds = @($deviceIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+
+  Write-Host "📦 Raven system child device ids found: $($deviceIds.Count)"
+  if ($deviceIds.Count -eq 0) {
+    Write-Host "⚠️ No child device ids found under system '$systemId'"
+    return [pscustomobject]$out
+  }
+
+  foreach ($sid in $deviceIds) {
+    Write-Host "🔍 Raven child lookup: '$sid'"
+    $dev = Get-RavenDevice -DeviceId $sid
+    if (-not $dev) {
+      Write-Host "⚠️ Raven child device not found for '$sid'"
+      continue
+    }
+
+    Write-Host "🧾 Raven child raw:"
+    Write-Host ($dev | ConvertTo-Json -Depth 20)
+
+    $m = $null
+    if ($dev.PSObject.Properties.Name -contains "model") {
+      $m = [string]$dev.model
+    }
+
+    # Barcode fallback order:
+    # barcode -> deviceExternalId -> externalId -> gnssSerialNumber -> name
+    $bc = $null
+    if ($dev.PSObject.Properties.Name -contains "barcode" -and -not [string]::IsNullOrWhiteSpace([string]$dev.barcode)) {
+      $bc = [string]$dev.barcode
+    }
+    elseif ($dev.PSObject.Properties.Name -contains "deviceExternalId" -and -not [string]::IsNullOrWhiteSpace([string]$dev.deviceExternalId)) {
+      $bc = [string]$dev.deviceExternalId
+    }
+    elseif ($dev.PSObject.Properties.Name -contains "externalId" -and -not [string]::IsNullOrWhiteSpace([string]$dev.externalId)) {
+      $bc = [string]$dev.externalId
+    }
+    elseif ($dev.PSObject.Properties.Name -contains "gnssSerialNumber" -and -not [string]::IsNullOrWhiteSpace([string]$dev.gnssSerialNumber)) {
+      $bc = [string]$dev.gnssSerialNumber
+    }
+    elseif ($dev.PSObject.Properties.Name -contains "name" -and -not [string]::IsNullOrWhiteSpace([string]$dev.name)) {
+      $bc = [string]$dev.name
+    }
+
+    # Version fallback order:
+    # softwareVersion -> version
+    $sv = $null
+    if ($dev.PSObject.Properties.Name -contains "softwareVersion" -and -not [string]::IsNullOrWhiteSpace([string]$dev.softwareVersion)) {
+      $sv = [string]$dev.softwareVersion
+    }
+    elseif ($dev.PSObject.Properties.Name -contains "version" -and -not [string]::IsNullOrWhiteSpace([string]$dev.version)) {
+      $sv = [string]$dev.version
+    }
+
+    Write-Host "   model='$m'"
+    Write-Host "   barcodeCandidate='$bc'"
+    Write-Host "   versionCandidate='$sv'"
 
     if (-not $out.AntalyaBarcode -and $m -match "ANTALYA") {
-      $out.AntalyaBarcode = [string]$bc
-      $out.AntalyaSw      = [string]$sv
+      $out.AntalyaBarcode = $bc
+      $out.AntalyaSw      = $sv
+      Write-Host "✅ Matched ANTALYA"
     }
 
     if (-not $out.PegasusBarcode -and $m -match "PEGASUS") {
-      $out.PegasusBarcode = [string]$bc
-      $out.PegasusSw      = [string]$sv
+      $out.PegasusBarcode = $bc
+      $out.PegasusSw      = $sv
+      Write-Host "✅ Matched PEGASUS"
     }
 
-    if ($out.AntalyaBarcode -and $out.PegasusBarcode) { break }
+    if ($out.AntalyaBarcode -and $out.PegasusBarcode) {
+      Write-Host "✅ Found both Antalya and Pegasus. Ending child scan."
+      break
+    }
   }
 
   return [pscustomobject]$out
@@ -468,21 +586,23 @@ try {
   if ($raven -and -not [string]::IsNullOrWhiteSpace($raven.PegasusBarcode)) { $fieldsToSet["customfield_16649"] = [string]$raven.PegasusBarcode }
   if ($raven -and -not [string]::IsNullOrWhiteSpace($raven.PegasusSw))      { $fieldsToSet["customfield_16505"] = [string]$raven.PegasusSw }
 
-  # --- Bundle field 13318 (GSS first, Raven fallback) ---
-  $bundleToWrite = $null
-  if (-not [string]::IsNullOrWhiteSpace($gssBundleVersion)) {
-    $bundleToWrite = $gssBundleVersion
-    Write-Host "✅ 13318 from GSS deviceBundleVersion"
-  } elseif ($raven -and -not [string]::IsNullOrWhiteSpace($raven.RavenRootSoftwareVersion)) {
-    $bundleToWrite = [string]$raven.RavenRootSoftwareVersion
-    Write-Host "✅ 13318 from Raven root softwareVersion (fallback)"
-  } else {
-    Write-Host "⚠️ No bundle version from GSS or Raven"
-  }
+# --- Bundle field 13318 (Raven first, GSS fallback) ---
+$bundleToWrite = $null
+if ($raven -and -not [string]::IsNullOrWhiteSpace($raven.RavenRootSoftwareVersion)) {
+  $bundleToWrite = [string]$raven.RavenRootSoftwareVersion
+  Write-Host "✅ 13318 from Raven root softwareVersion"
+}
+elseif (-not [string]::IsNullOrWhiteSpace($gssBundleVersion)) {
+  $bundleToWrite = $gssBundleVersion
+  Write-Host "✅ 13318 from GSS deviceBundleVersion (fallback)"
+}
+else {
+  Write-Host "⚠️ No bundle version from Raven or GSS"
+}
 
-  if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
-    $fieldsToSet["customfield_13318"] = $bundleToWrite
-  }
+if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
+  $fieldsToSet["customfield_13318"] = $bundleToWrite
+}
 
   # 5) Editmeta filtering (same as you had)
   if (-not $editMeta) {
