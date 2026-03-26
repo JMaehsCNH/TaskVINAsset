@@ -162,9 +162,7 @@ if ([string]::IsNullOrWhiteSpace($jiraToken)) {
 }
 
 # === QUERY JIRA ISSUES (new /search/jql with nextPageToken) ===
-$jql = 'project = PREC AND issuetype in ("Customer Task", "PV Task")'
-$searchUrl = "$jiraBaseUrl/rest/api/3/search/jql"
-
+$jql = 'project = PREC AND issuetype in ("Customer Task", "PV Task") AND statusCategory != Done'
 $body = @{
   jql        = $jql
   maxResults = 100
