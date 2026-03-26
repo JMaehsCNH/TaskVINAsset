@@ -98,10 +98,6 @@ function Get-RavenEnrichment {
     [Parameter(Mandatory=$false)][string]$RootDeviceId
   )
 
-  # Returns:
-  #  - RavenRootSoftwareVersion
-  #  - AntalyaBarcode, AntalyaSw
-  #  - PegasusBarcode, PegasusSw
   $out = [ordered]@{
     RavenRootSoftwareVersion = $null
     AntalyaBarcode           = $null
@@ -115,50 +111,78 @@ function Get-RavenEnrichment {
     return [pscustomobject]$out
   }
 
-  Write-Host "🔎 Raven root lookup: deviceId='$RootDeviceId'"
-  $rootDev = Get-RavenDevice -DeviceId $RootDeviceId
+  function Get-PropString {
+    param($obj, [string[]]$Names)
+    foreach ($n in $Names) {
+      if ($obj -and $obj.PSObject.Properties.Name -contains $n) {
+        $v = $obj.$n
+        if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) {
+          return [string]$v
+        }
+      }
+    }
+    return $null
+  }
+
+  function Resolve-RavenDeviceWithSystem {
+    param([string]$AnyId)
+
+    if ([string]::IsNullOrWhiteSpace($AnyId)) { return $null }
+
+    Write-Host "🔎 Raven root lookup: deviceId='$AnyId'"
+    $dev = Get-RavenDevice -DeviceId $AnyId
+    if (-not $dev) {
+      Write-Host "⚠️ Raven device not found for '$AnyId'"
+      return $null
+    }
+
+    Write-Host "🧾 Raven root raw:"
+    Write-Host ($dev | ConvertTo-Json -Depth 20)
+
+    $systemId = Get-PropString $dev @("systemId","systemID")
+    if (-not [string]::IsNullOrWhiteSpace($systemId)) {
+      return $dev
+    }
+
+    $retryIds = @(
+      (Get-PropString $dev @("externalDeviceId")),
+      (Get-PropString $dev @("sid")),
+      (Get-PropString $dev @("rowId"))
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
+    foreach ($rid in $retryIds) {
+      Write-Host "🔁 Raven retry lookup using alternate id '$rid'"
+      $retryDev = Get-RavenDevice -DeviceId $rid
+      if (-not $retryDev) { continue }
+
+      Write-Host "🧾 Raven retry raw:"
+      Write-Host ($retryDev | ConvertTo-Json -Depth 20)
+
+      $retrySystemId = Get-PropString $retryDev @("systemId","systemID")
+      if (-not [string]::IsNullOrWhiteSpace($retrySystemId)) {
+        Write-Host "✅ Found systemId '$retrySystemId' using alternate id '$rid'"
+        return $retryDev
+      }
+    }
+
+    return $dev
+  }
+
+  $rootDev = Resolve-RavenDeviceWithSystem -AnyId $RootDeviceId
   if (-not $rootDev) {
-    Write-Host "⚠️ Raven root device not found for '$RootDeviceId'"
     return [pscustomobject]$out
   }
 
-  Write-Host "🧾 Raven root raw:"
-  Write-Host ($rootDev | ConvertTo-Json -Depth 20)
-
-  # Root software version - support multiple possible property names
-  $rootSw = $null
-  if ($rootDev.PSObject.Properties.Name -contains "softwareVersion" -and -not [string]::IsNullOrWhiteSpace([string]$rootDev.softwareVersion)) {
-    $rootSw = [string]$rootDev.softwareVersion
-  }
-  elseif ($rootDev.PSObject.Properties.Name -contains "version" -and -not [string]::IsNullOrWhiteSpace([string]$rootDev.version)) {
-    $rootSw = [string]$rootDev.version
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($rootSw)) {
-    $out.RavenRootSoftwareVersion = $rootSw
-  }
-
-  $rootModel = [string]$rootDev.model
-  $systemId  = $null
-
-  if ($rootDev.PSObject.Properties.Name -contains "systemId") {
-    $systemId = [string]$rootDev.systemId
-  }
-  elseif ($rootDev.PSObject.Properties.Name -contains "systemID") {
-    $systemId = [string]$rootDev.systemID
-  }
+  $out.RavenRootSoftwareVersion = Get-PropString $rootDev @("softwareVersion","version")
+  $rootModel = Get-PropString $rootDev @("model")
+  $systemId  = Get-PropString $rootDev @("systemId","systemID")
 
   Write-Host "🧠 Root model: '$rootModel'"
   Write-Host "🧠 Root systemId: '$systemId'"
 
   if ([string]::IsNullOrWhiteSpace($systemId)) {
-    Write-Host "⚠️ No systemId returned from Raven root device."
+    Write-Host "⚠️ No systemId returned from Raven root device, even after retries."
     return [pscustomobject]$out
-  }
-
-  # Keep GEN3 gate, but only warn instead of hard fail if model text changes
-  if ($rootModel -notmatch "GEN3|Gen 3") {
-    Write-Host "⚠️ Root model does not contain GEN3/Gen 3. Continuing anyway because systemId exists."
   }
 
   $sys = Get-RavenSystem -SystemId $systemId
@@ -173,21 +197,19 @@ function Get-RavenEnrichment {
   $deviceIds = @()
 
   if ($sys.PSObject.Properties.Name -contains "devices" -and $sys.devices) {
-    # Sometimes devices is an array of ids, sometimes objects
     foreach ($d in $sys.devices) {
       if ($d -is [string]) {
         if (-not [string]::IsNullOrWhiteSpace($d)) {
           $deviceIds += [string]$d
         }
       }
-      elseif ($d.PSObject.Properties.Name -contains "deviceId" -and -not [string]::IsNullOrWhiteSpace([string]$d.deviceId)) {
-        $deviceIds += [string]$d.deviceId
-      }
-      elseif ($d.PSObject.Properties.Name -contains "id" -and -not [string]::IsNullOrWhiteSpace([string]$d.id)) {
-        $deviceIds += [string]$d.id
-      }
-      elseif ($d.PSObject.Properties.Name -contains "externalId" -and -not [string]::IsNullOrWhiteSpace([string]$d.externalId)) {
-        $deviceIds += [string]$d.externalId
+      else {
+        foreach ($propName in @("deviceId","id","externalId","externalDeviceId","sid","rowId")) {
+          if ($d.PSObject.Properties.Name -contains $propName -and -not [string]::IsNullOrWhiteSpace([string]$d.$propName)) {
+            $deviceIds += [string]$d.$propName
+            break
+          }
+        }
       }
     }
   }
@@ -211,39 +233,9 @@ function Get-RavenEnrichment {
     Write-Host "🧾 Raven child raw:"
     Write-Host ($dev | ConvertTo-Json -Depth 20)
 
-    $m = $null
-    if ($dev.PSObject.Properties.Name -contains "model") {
-      $m = [string]$dev.model
-    }
-
-    # Barcode fallback order:
-    # barcode -> deviceExternalId -> externalId -> gnssSerialNumber -> name
-    $bc = $null
-    if ($dev.PSObject.Properties.Name -contains "barcode" -and -not [string]::IsNullOrWhiteSpace([string]$dev.barcode)) {
-      $bc = [string]$dev.barcode
-    }
-    elseif ($dev.PSObject.Properties.Name -contains "deviceExternalId" -and -not [string]::IsNullOrWhiteSpace([string]$dev.deviceExternalId)) {
-      $bc = [string]$dev.deviceExternalId
-    }
-    elseif ($dev.PSObject.Properties.Name -contains "externalId" -and -not [string]::IsNullOrWhiteSpace([string]$dev.externalId)) {
-      $bc = [string]$dev.externalId
-    }
-    elseif ($dev.PSObject.Properties.Name -contains "gnssSerialNumber" -and -not [string]::IsNullOrWhiteSpace([string]$dev.gnssSerialNumber)) {
-      $bc = [string]$dev.gnssSerialNumber
-    }
-    elseif ($dev.PSObject.Properties.Name -contains "name" -and -not [string]::IsNullOrWhiteSpace([string]$dev.name)) {
-      $bc = [string]$dev.name
-    }
-
-    # Version fallback order:
-    # softwareVersion -> version
-    $sv = $null
-    if ($dev.PSObject.Properties.Name -contains "softwareVersion" -and -not [string]::IsNullOrWhiteSpace([string]$dev.softwareVersion)) {
-      $sv = [string]$dev.softwareVersion
-    }
-    elseif ($dev.PSObject.Properties.Name -contains "version" -and -not [string]::IsNullOrWhiteSpace([string]$dev.version)) {
-      $sv = [string]$dev.version
-    }
+    $m  = Get-PropString $dev @("model")
+    $bc = Get-PropString $dev @("barcode","externalDeviceId","externalId","gnssSerialNumber","gnssSerial","serialNumber","name")
+    $sv = Get-PropString $dev @("softwareVersion","version")
 
     Write-Host "   model='$m'"
     Write-Host "   barcodeCandidate='$bc'"
@@ -269,7 +261,6 @@ function Get-RavenEnrichment {
 
   return [pscustomobject]$out
 }
-
 # --- Quick secret sanity ---
 Write-Host "🔐 Email: $jiraEmail"
 if ([string]::IsNullOrWhiteSpace($jiraToken)) {
