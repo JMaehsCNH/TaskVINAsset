@@ -76,7 +76,7 @@ if ([string]::IsNullOrWhiteSpace($env:RAVEN_DEV_SECRET)) {
 
 # === RAVEN CONFIG ===
 $ravenBaseUrlDev = "https://connectivity.raven.engineering"
-$ravenBaseUrlProd  = "https://connectivity.ravenslingshot.com/v1/oas"   
+$ravenBaseUrlProd  = "https://connectivity.ravenslingshot.com"   
 
 $ravenHeadersProd = @{
   "x-s2s-caller" = $env:RAVEN_S2S_CALLER
