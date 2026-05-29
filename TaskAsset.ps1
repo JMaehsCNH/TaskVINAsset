@@ -727,15 +727,20 @@ try {
   if ($raven -and -not [string]::IsNullOrWhiteSpace($raven.PegasusBarcode)) { $fieldsToSet["customfield_16649"] = [string]$raven.PegasusBarcode }
   if ($raven -and -not [string]::IsNullOrWhiteSpace($raven.PegasusSw))      { $fieldsToSet["customfield_16505"] = [string]$raven.PegasusSw }
 
-# --- Bundle field 13318 (Raven first, GSS fallback) ---
+# --- Bundle field 13318 (GSS default, Raven only if Antalya or Pegasus child was found) ---
 $bundleToWrite = $null
-if ($raven -and -not [string]::IsNullOrWhiteSpace($raven.RavenRootSoftwareVersion)) {
+$ravenHadChildMatch = $raven -and (
+  -not [string]::IsNullOrWhiteSpace($raven.AntalyaSw) -or
+  -not [string]::IsNullOrWhiteSpace($raven.PegasusSw)
+)
+
+if ($ravenHadChildMatch -and -not [string]::IsNullOrWhiteSpace($raven.RavenRootSoftwareVersion)) {
   $bundleToWrite = [string]$raven.RavenRootSoftwareVersion
-  Write-Host "✅ 13318 from Raven root softwareVersion"
+  Write-Host "✅ 13318 from Raven root softwareVersion (Antalya/Pegasus child found in system)"
 }
 elseif (-not [string]::IsNullOrWhiteSpace($gssBundleVersion)) {
   $bundleToWrite = $gssBundleVersion
-  Write-Host "✅ 13318 from GSS deviceBundleVersion (fallback)"
+  Write-Host "✅ 13318 from GSS deviceBundleVersion (default)"
 }
 else {
   Write-Host "⚠️ No bundle version from Raven or GSS"
