@@ -669,9 +669,8 @@ try {
 
   try { $gssCeqId        = [string]$chosen.ceqId } catch {}
   try { $gssCompany      = [string]$chosen.companyName } catch {}
-  try { $gssTdac         = [string]$chosen.devices.tdac } catch {}
+  try { $gssTdac         = ([string]$chosen.devices.tdac).Trim() } catch {}
   try { $gssBundleVersion= [string]$chosen.devices.deviceBundleVersion } catch {}
-
   Write-Host "🧩 GSS extracted:"
   Write-Host ("   ceqId:        '{0}'" -f ($gssCeqId | Out-String).Trim())
   Write-Host ("   companyName:  '{0}'" -f ($gssCompany | Out-String).Trim())
