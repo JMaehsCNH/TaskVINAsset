@@ -627,9 +627,9 @@ try {
   $urlProd = "https://cnh-we-prod-vdi-apim.azure-api.net/gssp/core/v1/assets/$($vin)?domain=AG&assetIdType=VIN&metrics=ENG_HOURS&showPosition=True&showBundleVersion=True&showSource=true"
   $urlMkt  = "https://cnh-we-stage-vdi-apim.azure-api.net/gsss/core/v1/assets/$($vin)?domain=AG&assetIdType=VIN&metrics=ENG_HOURS&showPosition=True&showBundleVersion=True&showSource=true"
 
-  try { $dataProd = Invoke-RestMethod -Uri $urlProd -Headers $headerExtProd -Method Get } catch { $dataProd = $null }
-  try { $dataMkt  = Invoke-RestMethod -Uri $urlMkt  -Headers $headerExtMkt  -Method Get } catch { $dataMkt  = $null }
-
+   try { $dataProd = Invoke-RestMethod -Uri $urlProd -Headers $headerExtProd -Method Get } catch { Show-HttpError $_ "PROD GSS call failed for VIN $vin"; $dataProd = $null }
+  try { $dataMkt  = Invoke-RestMethod -Uri $urlMkt  -Headers $headerExtMkt  -Method Get } catch { Show-HttpError $_ "MKT/STAGE GSS call failed for VIN $vin"; $dataMkt  = $null }
+  
   if (-not $dataProd -and -not $dataMkt) {
     Write-Host "❌ No data from either API for VIN $vin"
     continue
