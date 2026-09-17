@@ -55,9 +55,10 @@ $statusInValidation = "In Validation"     # <-- confirm this matches the exact J
 $statusComplete     = "Complete"          # <-- confirm this matches the exact Jira status name
 # How far back to still re-check items that are already in $statusComplete, so the script
 # catches the one run where an item transitions into Complete and gives it its final update,
-# without re-querying every Complete item that has ever existed. Tune to your run cadence
-# (e.g. if this only runs weekly, bump this to 7+).
-$completedLookbackDays = 30
+# without re-querying every Complete item that has ever existed. This directly controls how
+# many extra issues get pulled into (and slow down) each run -- set it to a little more than
+# how often this script actually runs (e.g. daily run -> 2-3 days is plenty; weekly -> 8-9).
+$completedLookbackDays = 3
 
 # GSS External API Keys
 $subsKeyGSSProd = $env:subsKeyGSSProd
@@ -471,6 +472,23 @@ function Get-LatestFieldChangeTime {
   return $latest
 }
 
+function Get-LatestTransmissionTime {
+  # GSS responses report freshness as an array of sourceTypes, each with its own
+  # lastTransmissionTime -- take the most recent one. Returns $null if none present.
+  param($GssData)
+
+  if (-not $GssData -or -not $GssData.sourceTypes) { return $null }
+
+  $times = @()
+  foreach ($st in $GssData.sourceTypes) {
+    if ($st.lastTransmissionTime) {
+      try { $times += [datetime]$st.lastTransmissionTime } catch {}
+    }
+  }
+  if ($times.Count -eq 0) { return $null }
+  return ($times | Sort-Object -Descending | Select-Object -First 1)
+}
+
 # --- Quick secret sanity ---
 Write-Host "🔐 Email: $jiraEmail"
 if ([string]::IsNullOrWhiteSpace($jiraToken)) {
@@ -641,7 +659,9 @@ foreach ($issue in $allIssues) {
   # Work out whether vehicle-hours tracking is fully done for this issue, so we don't
   # skip an otherwise-"complete" issue that still needs its Ending/Total hours finalized.
   $vehicleHoursDone = $false
-  if ($currentStatus -eq $statusComplete) {
+  if ($currentStatus -eq $statusComplete -and -not [string]::IsNullOrWhiteSpace([string]$existingEndHours)) {
+    # Only worth the changelog round trip if Ending Hours has actually been set before --
+    # if it's still blank, it can't possibly be finalized yet.
     $histories = Get-IssueChangelog -IssueId $issueId
     $completeAt = Get-LatestTransitionTime -Histories $histories -ToStatus $statusComplete
     $endHoursChangedAt = Get-LatestFieldChangeTime -Histories $histories -FieldId $fieldEndHours
@@ -680,20 +700,11 @@ foreach ($issue in $allIssues) {
     continue
   }
 
-  # --- C1) Map names ↔ IDs to confirm customfield IDs are right ---
-  try {
-    $withNames = Invoke-RestMethod -Uri "$jiraBaseUrl/rest/api/3/issue/$issueId?expand=names" -Headers $headers -Method Get
-    Write-Host "🧭 Field name map:"
-    Write-Host "    customfield_13087 => $($withNames.names.customfield_13087)"
-    Write-Host "    customfield_13089 => $($withNames.names.customfield_13089)"
-    Write-Host "    customfield_13088 => $($withNames.names.customfield_13088)"
-    Write-Host "    customfield_13094 => $($withNames.names.customfield_13094)"
-    Write-Host "    customfield_13318 => $($withNames.names.customfield_13318)"
-    Write-Host "    customfield_13097 => $($withNames.names.customfield_13097)"
-    Write-Host "    customfield_13098 => $($withNames.names.customfield_13098)"
-  } catch {
-    Write-Host "⚠️ Could not fetch names map; continuing."
-  }
+  # --- C1) (Removed) Field name map lookup ---
+  # This used to fetch $jiraBaseUrl/.../issue/$issueId?expand=names purely to print a
+  # debug map of customfield IDs to names. It wasn't used anywhere in the update logic,
+  # but it was an extra HTTP round trip on every single issue. If you need to re-check
+  # field name mappings, do it once ad hoc rather than on every run.
 
 # --- C2) Check which fields are editable on this issue ---
 $editMeta = $null
@@ -722,8 +733,22 @@ try {
   if     ($dataProd -and -not $dataMkt) { $chosen = $dataProd; $envType = "PROD" }
   elseif ($dataMkt  -and -not $dataProd){ $chosen = $dataMkt;  $envType = "NON-PROD" }
   else {
-    $chosen = if ($dataProd.time -ge $dataMkt.time) { $dataProd } else { $dataMkt }
-    $envType = if ($chosen -eq $dataProd) { "PROD" } else { "NON-PROD" }
+    $prodTime = Get-LatestTransmissionTime -GssData $dataProd
+    $mktTime  = Get-LatestTransmissionTime -GssData $dataMkt
+    Write-Host ("🕒 PROD lastTransmissionTime: {0}" -f (($prodTime | Out-String).Trim()))
+    Write-Host ("🕒 MKT/STAGE lastTransmissionTime: {0}" -f (($mktTime | Out-String).Trim()))
+
+    if ($prodTime -and $mktTime) {
+      if ($prodTime -ge $mktTime) { $chosen = $dataProd; $envType = "PROD" } else { $chosen = $dataMkt; $envType = "NON-PROD" }
+    } elseif ($prodTime) {
+      $chosen = $dataProd; $envType = "PROD"
+    } elseif ($mktTime) {
+      $chosen = $dataMkt; $envType = "NON-PROD"
+    } else {
+      # Neither response reports a transmission time -- fall back to PROD rather than guess.
+      Write-Host "⚠️ Neither PROD nor MKT reported a lastTransmissionTime; defaulting to PROD."
+      $chosen = $dataProd; $envType = "PROD"
+    }
   }
   try { $ravenRootId = [string]$chosen.devices.tdac } catch {}
   
