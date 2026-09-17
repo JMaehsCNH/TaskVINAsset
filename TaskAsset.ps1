@@ -47,6 +47,18 @@ $jiraToken   = $env:jiraToken          # GitHub secret
 $projectKey  = "PREC"
 $issueTypeClause = '("Customer Task", "PV Task")'
 
+# --- Vehicle Hours tracking config ---
+$fieldStartHours  = "customfield_14806"   # Starting Vehicle Hours (set once, on first hit of "In Validation")
+$fieldEndHours    = "customfield_14805"   # Ending Vehicle Hours (updated every run until Complete, then frozen)
+$fieldTotalHours  = "customfield_14804"   # Total Vehicle Hours = End - Start
+$statusInValidation = "In Validation"     # <-- confirm this matches the exact Jira status name
+$statusComplete     = "Complete"          # <-- confirm this matches the exact Jira status name
+# How far back to still re-check items that are already in $statusComplete, so the script
+# catches the one run where an item transitions into Complete and gives it its final update,
+# without re-querying every Complete item that has ever existed. Tune to your run cadence
+# (e.g. if this only runs weekly, bump this to 7+).
+$completedLookbackDays = 30
+
 # GSS External API Keys
 $subsKeyGSSProd = $env:subsKeyGSSProd
 $subsKeyGSSMkt  = $env:subsKeyGSSMkt
@@ -407,6 +419,58 @@ function Get-RavenEnrichment {
   return [pscustomobject]$out
 }
 
+function Get-IssueChangelog {
+  param([Parameter(Mandatory=$true)][string]$IssueId)
+
+  $histories = @()
+  $startAt = 0
+  do {
+    $url = "$jiraBaseUrl/rest/api/3/issue/$IssueId/changelog?startAt=$startAt&maxResults=100"
+    try {
+      $page = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
+    } catch {
+      Show-HttpError $_ "Changelog fetch failed for $IssueId"
+      return $histories
+    }
+    if ($page.values) { $histories += $page.values }
+    $startAt += $page.values.Count
+  } while ($page.values.Count -gt 0 -and $histories.Count -lt $page.total)
+
+  return $histories
+}
+
+function Get-LatestTransitionTime {
+  # Latest timestamp the issue's status changed TO $ToStatus
+  param($Histories, [string]$ToStatus)
+
+  $latest = $null
+  foreach ($h in $Histories) {
+    foreach ($item in $h.items) {
+      if ($item.field -eq "status" -and $item.toString -eq $ToStatus) {
+        $t = [datetime]$h.created
+        if (-not $latest -or $t -gt $latest) { $latest = $t }
+      }
+    }
+  }
+  return $latest
+}
+
+function Get-LatestFieldChangeTime {
+  # Latest timestamp a given customfield id was changed
+  param($Histories, [string]$FieldId)
+
+  $latest = $null
+  foreach ($h in $Histories) {
+    foreach ($item in $h.items) {
+      if ($item.fieldId -eq $FieldId -or $item.field -eq $FieldId) {
+        $t = [datetime]$h.created
+        if (-not $latest -or $t -gt $latest) { $latest = $t }
+      }
+    }
+  }
+  return $latest
+}
+
 # --- Quick secret sanity ---
 Write-Host "🔐 Email: $jiraEmail"
 if ([string]::IsNullOrWhiteSpace($jiraToken)) {
@@ -417,7 +481,7 @@ if ([string]::IsNullOrWhiteSpace($jiraToken)) {
 }
 
 # === QUERY JIRA ISSUES (new /search/jql with nextPageToken) ===
-$jql = 'project = PREC AND issuetype in ("Customer Task", "PV Task") AND statusCategory != Done'
+$jql = "project = PREC AND issuetype in (`"Customer Task`", `"PV Task`") AND (statusCategory != Done OR (status = `"$statusComplete`" AND resolutiondate >= -${completedLookbackDays}d))"
 $searchUrl = "$jiraBaseUrl/rest/api/3/search/jql"
 
 $body = @{
@@ -427,7 +491,11 @@ $body = @{
     "customfield_13087", # VIN
     "customfield_13088", # CEQ
     "customfield_13089", # Company
-    "customfield_13094"  # TDAC
+    "customfield_13094", # TDAC
+    "status",             # needed for vehicle-hours state logic
+    $fieldStartHours,     # Starting Vehicle Hours
+    $fieldEndHours,       # Ending Vehicle Hours
+    $fieldTotalHours      # Total Vehicle Hours
   )
 }
 
@@ -566,8 +634,24 @@ foreach ($issue in $allIssues) {
   $hasCeqId   = -not [string]::IsNullOrWhiteSpace([string]$issue.fields.customfield_13088)
   $hasCompany = -not [string]::IsNullOrWhiteSpace([string]$issue.fields.customfield_13089)
 
-  if ($hasTdac -and $hasCeqId -and $hasCompany) {
-    Write-Host "⏭️  Skipping $issueKey (already has TDAC + CEQ + Company)."
+  $currentStatus = $issue.fields.status.name
+  $existingStartHours = $issue.fields.$fieldStartHours
+  $existingEndHours   = $issue.fields.$fieldEndHours
+
+  # Work out whether vehicle-hours tracking is fully done for this issue, so we don't
+  # skip an otherwise-"complete" issue that still needs its Ending/Total hours finalized.
+  $vehicleHoursDone = $false
+  if ($currentStatus -eq $statusComplete) {
+    $histories = Get-IssueChangelog -IssueId $issueId
+    $completeAt = Get-LatestTransitionTime -Histories $histories -ToStatus $statusComplete
+    $endHoursChangedAt = Get-LatestFieldChangeTime -Histories $histories -FieldId $fieldEndHours
+    if ($completeAt -and $endHoursChangedAt -and $endHoursChangedAt -ge $completeAt) {
+      $vehicleHoursDone = $true
+    }
+  }
+
+  if ($hasTdac -and $hasCeqId -and $hasCompany -and $vehicleHoursDone) {
+    Write-Host "⏭️  Skipping $issueKey (already has TDAC + CEQ + Company, vehicle hours finalized)."
     continue
   }
 
@@ -748,6 +832,62 @@ else {
 if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
   $fieldsToSet["customfield_13318"] = $bundleToWrite
 }
+
+  # --- Vehicle Hours (Starting / Ending / Total), driven by GSS Engine Hours ---
+  $engineHoursRaw = $chosen.metrics.value.value
+  $engineHours = $null
+  if ($null -ne $engineHoursRaw) {
+    try { $engineHours = [double]$engineHoursRaw } catch { $engineHours = $null }
+  }
+
+  if ($null -eq $engineHours) {
+    Write-Host "⚠️ No numeric Engine Hours from GSS for $issueKey; skipping vehicle-hours update."
+  } else {
+    Write-Host "⏱️ GSS Engine Hours for $issueKey`: $engineHours"
+
+    # Starting Hours: set once, only the first time we see this issue sitting in
+    # "$statusInValidation", and only if it isn't already populated.
+    $startHoursToWrite = $null
+    if ($currentStatus -eq $statusInValidation -and [string]::IsNullOrWhiteSpace([string]$existingStartHours)) {
+      $startHoursToWrite = $engineHours
+      $fieldsToSet[$fieldStartHours] = $startHoursToWrite
+      Write-Host "🚩 Setting Starting Vehicle Hours ($fieldStartHours) = $startHoursToWrite (status = '$currentStatus')"
+    }
+
+    # Ending Hours: update every run while not yet Complete. Once Complete, only
+    # write it one more time -- the run where the transition to Complete happened
+    # and nothing has updated Ending Hours since -- then leave it alone for good.
+    $endHoursToWrite = $null
+    if ($currentStatus -ne $statusComplete) {
+      $endHoursToWrite = $engineHours
+      $fieldsToSet[$fieldEndHours] = $endHoursToWrite
+      Write-Host "🚩 Updating Ending Vehicle Hours ($fieldEndHours) = $endHoursToWrite (status = '$currentStatus')"
+    } elseif (-not $vehicleHoursDone) {
+      $endHoursToWrite = $engineHours
+      $fieldsToSet[$fieldEndHours] = $endHoursToWrite
+      Write-Host "🏁 $issueKey just transitioned to '$statusComplete' -- writing FINAL Ending Vehicle Hours ($fieldEndHours) = $endHoursToWrite"
+    } else {
+      Write-Host "ℹ️ $issueKey is already '$statusComplete' and Ending Vehicle Hours was already finalized; not touching it."
+    }
+
+    # Total Hours = Ending - Starting, using whichever value we just wrote this run,
+    # falling back to what's already on the issue.
+    $startForTotal = if ($null -ne $startHoursToWrite) { $startHoursToWrite } else { $existingStartHours }
+    $endForTotal   = if ($null -ne $endHoursToWrite)   { $endHoursToWrite }   else { $existingEndHours }
+
+    $startNum = $null
+    $endNum   = $null
+    try { if (-not [string]::IsNullOrWhiteSpace([string]$startForTotal)) { $startNum = [double]$startForTotal } } catch {}
+    try { if (-not [string]::IsNullOrWhiteSpace([string]$endForTotal))   { $endNum   = [double]$endForTotal } } catch {}
+
+    if ($null -ne $startNum -and $null -ne $endNum) {
+      $totalHours = $endNum - $startNum
+      $fieldsToSet[$fieldTotalHours] = $totalHours
+      Write-Host "🧮 Total Vehicle Hours ($fieldTotalHours) = $endNum - $startNum = $totalHours"
+    } else {
+      Write-Host "ℹ️ Not enough data yet to compute Total Vehicle Hours (start='$startForTotal' end='$endForTotal')."
+    }
+  }
 
   # 5) Editmeta filtering (same as you had)
   if (-not $editMeta) {
