@@ -499,7 +499,7 @@ if ([string]::IsNullOrWhiteSpace($jiraToken)) {
 }
 
 # === QUERY JIRA ISSUES (new /search/jql with nextPageToken) ===
-$jql = "project = PREC AND issuetype in (`"Customer Task`", `"PV Task`") AND (statusCategory != Done OR (status = `"$statusComplete`" AND resolutiondate >= -${completedLookbackDays}d))"
+$jql = "project = PREC AND issuetype in (`"Customer Task`", `"PV Task`") AND customfield_13087 is not EMPTY AND (statusCategory != Done OR (status = `"$statusComplete`" AND resolutiondate >= -${completedLookbackDays}d))"
 $searchUrl = "$jiraBaseUrl/rest/api/3/search/jql"
 
 $body = @{
@@ -862,7 +862,7 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
   $engineHoursRaw = $chosen.metrics.value.value
   $engineHours = $null
   if ($null -ne $engineHoursRaw) {
-    try { $engineHours = [double]$engineHoursRaw } catch { $engineHours = $null }
+    try { $engineHours = [Math]::Round([double]$engineHoursRaw, 2) } catch { $engineHours = $null }
   }
 
   if ($null -eq $engineHours) {
@@ -873,12 +873,13 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
     # Starting Hours: set once, only the first time we see this issue sitting in
     # "$statusInValidation", and only if it isn't already populated.
     # NOTE: Starting/Ending/Total Vehicle Hours are Jira "Text" custom fields
-    # (not Number fields), so values must go over the wire as strings.
+    # (not Number fields), so values must go over the wire as strings, formatted
+    # to a fixed 2 decimal places (F2) so e.g. 668.05 never shows up as "668".
     $startHoursToWrite = $null
     if ($currentStatus -eq $statusInValidation -and [string]::IsNullOrWhiteSpace([string]$existingStartHours)) {
       $startHoursToWrite = $engineHours
-      $fieldsToSet[$fieldStartHours] = $startHoursToWrite.ToString([System.Globalization.CultureInfo]::InvariantCulture)
-      Write-Host "🚩 Setting Starting Vehicle Hours ($fieldStartHours) = $startHoursToWrite (status = '$currentStatus')"
+      $fieldsToSet[$fieldStartHours] = $startHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
+      Write-Host "🚩 Setting Starting Vehicle Hours ($fieldStartHours) = $($fieldsToSet[$fieldStartHours]) (status = '$currentStatus')"
     }
 
     # Ending Hours: update every run while not yet Complete. Once Complete, only
@@ -887,12 +888,12 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
     $endHoursToWrite = $null
     if ($currentStatus -ne $statusComplete) {
       $endHoursToWrite = $engineHours
-      $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString([System.Globalization.CultureInfo]::InvariantCulture)
-      Write-Host "🚩 Updating Ending Vehicle Hours ($fieldEndHours) = $endHoursToWrite (status = '$currentStatus')"
+      $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
+      Write-Host "🚩 Updating Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours]) (status = '$currentStatus')"
     } elseif (-not $vehicleHoursDone) {
       $endHoursToWrite = $engineHours
-      $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString([System.Globalization.CultureInfo]::InvariantCulture)
-      Write-Host "🏁 $issueKey just transitioned to '$statusComplete' -- writing FINAL Ending Vehicle Hours ($fieldEndHours) = $endHoursToWrite"
+      $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
+      Write-Host "🏁 $issueKey just transitioned to '$statusComplete' -- writing FINAL Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours])"
     } else {
       Write-Host "ℹ️ $issueKey is already '$statusComplete' and Ending Vehicle Hours was already finalized; not touching it."
     }
@@ -908,9 +909,9 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
     try { if (-not [string]::IsNullOrWhiteSpace([string]$endForTotal))   { $endNum   = [double]$endForTotal } } catch {}
 
     if ($null -ne $startNum -and $null -ne $endNum) {
-      $totalHours = $endNum - $startNum
-      $fieldsToSet[$fieldTotalHours] = $totalHours.ToString([System.Globalization.CultureInfo]::InvariantCulture)
-      Write-Host "🧮 Total Vehicle Hours ($fieldTotalHours) = $endNum - $startNum = $totalHours"
+      $totalHours = [Math]::Round($endNum - $startNum, 2)
+      $fieldsToSet[$fieldTotalHours] = $totalHours.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
+      Write-Host "🧮 Total Vehicle Hours ($fieldTotalHours) = $endNum - $startNum = $($fieldsToSet[$fieldTotalHours])"
     } else {
       Write-Host "ℹ️ Not enough data yet to compute Total Vehicle Hours (start='$startForTotal' end='$endForTotal')."
     }
