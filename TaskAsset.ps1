@@ -876,8 +876,10 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
     # (not Number fields), so values must go over the wire as strings, formatted
     # to a fixed 2 decimal places (F2) so e.g. 668.05 never shows up as "668".
     $startHoursToWrite = $null
+    $justSetStartHours = $false
     if ($currentStatus -eq $statusInValidation -and [string]::IsNullOrWhiteSpace([string]$existingStartHours)) {
       $startHoursToWrite = $engineHours
+      $justSetStartHours = $true
       $fieldsToSet[$fieldStartHours] = $startHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
       Write-Host "🚩 Setting Starting Vehicle Hours ($fieldStartHours) = $($fieldsToSet[$fieldStartHours]) (status = '$currentStatus')"
     }
@@ -885,8 +887,14 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
     # Ending Hours: update every run while not yet Complete. Once Complete, only
     # write it one more time -- the run where the transition to Complete happened
     # and nothing has updated Ending Hours since -- then leave it alone for good.
+    # On the same run Starting Hours is first set, force Ending Hours to that same
+    # value too, so Total Vehicle Hours comes out to exactly 0 at the start.
     $endHoursToWrite = $null
-    if ($currentStatus -ne $statusComplete) {
+    if ($justSetStartHours) {
+      $endHoursToWrite = $startHoursToWrite
+      $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
+      Write-Host "🚩 Also setting Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours]) to match Starting Hours (Total = 0)"
+    } elseif ($currentStatus -ne $statusComplete) {
       $endHoursToWrite = $engineHours
       $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
       Write-Host "🚩 Updating Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours]) (status = '$currentStatus')"
