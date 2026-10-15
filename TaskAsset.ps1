@@ -49,16 +49,15 @@ $issueTypeClause = '("Customer Task", "PV Task")'
 
 # --- Vehicle Hours tracking config ---
 $fieldStartHours  = "customfield_14806"   # Starting Vehicle Hours (set once, on first hit of "In Validation")
-$fieldEndHours    = "customfield_14805"   # Ending Vehicle Hours (updated every run until Complete, then frozen)
+$fieldEndHours    = "customfield_14805"   # Ending Vehicle Hours (updated every run; one final update when Complete)
 $fieldTotalHours  = "customfield_14804"   # Total Vehicle Hours = End - Start
 $statusInValidation = "In Validation"     # <-- confirm this matches the exact Jira status name
 $statusComplete     = "Complete"          # <-- confirm this matches the exact Jira status name
-# How far back to still re-check items that are already in $statusComplete, so the script
-# catches the one run where an item transitions into Complete and gives it its final update,
-# without re-querying every Complete item that has ever existed. This directly controls how
-# many extra issues get pulled into (and slow down) each run -- set it to a little more than
-# how often this script actually runs (e.g. daily run -> 2-3 days is plenty; weekly -> 8-9).
-$completedLookbackDays = 3
+# Items that moved to Complete within this many minutes get ONE final full update; older
+# Complete items are never fetched again. The pipeline runs every 2 hours, so this is
+# 2h + a 10-minute buffer for late-starting runs. Keep it just above the run interval:
+# larger -> an item can get a second "final" update; smaller -> items can miss theirs.
+$completedLookbackMinutes = 130
 
 # GSS External API Keys
 $subsKeyGSSProd = $env:subsKeyGSSProd
@@ -89,7 +88,7 @@ if ([string]::IsNullOrWhiteSpace($env:RAVEN_DEV_SECRET)) {
 
 # === RAVEN CONFIG ===
 $ravenBaseUrlDev = "https://connectivity.raven.engineering"
-$ravenBaseUrlProd  = "https://connectivity.ravenslingshot.com"   
+$ravenBaseUrlProd  = "https://connectivity.ravenslingshot.com"
 
 $ravenHeadersProd = @{
   "x-s2s-caller" = $env:RAVEN_S2S_CALLER
@@ -420,58 +419,6 @@ function Get-RavenEnrichment {
   return [pscustomobject]$out
 }
 
-function Get-IssueChangelog {
-  param([Parameter(Mandatory=$true)][string]$IssueId)
-
-  $histories = @()
-  $startAt = 0
-  do {
-    $url = "$jiraBaseUrl/rest/api/3/issue/$IssueId/changelog?startAt=$startAt&maxResults=100"
-    try {
-      $page = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
-    } catch {
-      Show-HttpError $_ "Changelog fetch failed for $IssueId"
-      return $histories
-    }
-    if ($page.values) { $histories += $page.values }
-    $startAt += $page.values.Count
-  } while ($page.values.Count -gt 0 -and $histories.Count -lt $page.total)
-
-  return $histories
-}
-
-function Get-LatestTransitionTime {
-  # Latest timestamp the issue's status changed TO $ToStatus
-  param($Histories, [string]$ToStatus)
-
-  $latest = $null
-  foreach ($h in $Histories) {
-    foreach ($item in $h.items) {
-      if ($item.field -eq "status" -and $item.toString -eq $ToStatus) {
-        $t = [datetime]$h.created
-        if (-not $latest -or $t -gt $latest) { $latest = $t }
-      }
-    }
-  }
-  return $latest
-}
-
-function Get-LatestFieldChangeTime {
-  # Latest timestamp a given customfield id was changed
-  param($Histories, [string]$FieldId)
-
-  $latest = $null
-  foreach ($h in $Histories) {
-    foreach ($item in $h.items) {
-      if ($item.fieldId -eq $FieldId -or $item.field -eq $FieldId) {
-        $t = [datetime]$h.created
-        if (-not $latest -or $t -gt $latest) { $latest = $t }
-      }
-    }
-  }
-  return $latest
-}
-
 function Get-LatestTransmissionTime {
   # GSS responses report freshness as an array of sourceTypes, each with its own
   # lastTransmissionTime -- take the most recent one. Returns $null if none present.
@@ -499,7 +446,9 @@ if ([string]::IsNullOrWhiteSpace($jiraToken)) {
 }
 
 # === QUERY JIRA ISSUES (new /search/jql with nextPageToken) ===
-$jql = "project = PREC AND issuetype in (`"Customer Task`", `"PV Task`") AND customfield_13087 is not EMPTY AND (statusCategory != Done OR (status = `"$statusComplete`" AND resolutiondate >= -${completedLookbackDays}d))"
+# Open items, plus items that moved to Complete within the last $completedLookbackMinutes
+# (those get one final update; after that they fall out of this query for good).
+$jql = "project = PREC AND issuetype in (`"Customer Task`", `"PV Task`") AND customfield_13087 is not EMPTY AND (statusCategory != Done OR (status = `"$statusComplete`" AND resolutiondate >= -${completedLookbackMinutes}m))"
 $searchUrl = "$jiraBaseUrl/rest/api/3/search/jql"
 
 $body = @{
@@ -647,32 +596,14 @@ foreach ($issue in $allIssues) {
   $issueKey = $issue.key
   $vin      = $issue.fields.customfield_13087
 
-  # ✅ SKIP GOES HERE
-  $hasTdac    = -not [string]::IsNullOrWhiteSpace([string]$issue.fields.customfield_13094)
-  $hasCeqId   = -not [string]::IsNullOrWhiteSpace([string]$issue.fields.customfield_13088)
-  $hasCompany = -not [string]::IsNullOrWhiteSpace([string]$issue.fields.customfield_13089)
-
   $currentStatus = $issue.fields.status.name
   $existingStartHours = $issue.fields.$fieldStartHours
   $existingEndHours   = $issue.fields.$fieldEndHours
 
-  # Work out whether vehicle-hours tracking is fully done for this issue, so we don't
-  # skip an otherwise-"complete" issue that still needs its Ending/Total hours finalized.
-  $vehicleHoursDone = $false
-  if ($currentStatus -eq $statusComplete -and -not [string]::IsNullOrWhiteSpace([string]$existingEndHours)) {
-    # Only worth the changelog round trip if Ending Hours has actually been set before --
-    # if it's still blank, it can't possibly be finalized yet.
-    $histories = Get-IssueChangelog -IssueId $issueId
-    $completeAt = Get-LatestTransitionTime -Histories $histories -ToStatus $statusComplete
-    $endHoursChangedAt = Get-LatestFieldChangeTime -Histories $histories -FieldId $fieldEndHours
-    if ($completeAt -and $endHoursChangedAt -and $endHoursChangedAt -ge $completeAt) {
-      $vehicleHoursDone = $true
-    }
-  }
-
-  if ($hasTdac -and $hasCeqId -and $hasCompany -and $vehicleHoursDone) {
-    Write-Host "⏭️  Skipping $issueKey (already has TDAC + CEQ + Company, vehicle hours finalized)."
-    continue
+  # Complete items only reach here if they moved to Complete within the last
+  # $completedLookbackMinutes (see JQL), so each one gets exactly this one final update.
+  if ($currentStatus -eq $statusComplete) {
+    Write-Host "`n🏁 $issueKey moved to '$statusComplete' since the last run -- doing its FINAL update."
   }
 
   Write-Host "`n🔍 Processing: $issueKey (ID: $issueId)  VIN: $vin"
@@ -691,7 +622,7 @@ foreach ($issue in $allIssues) {
       continue
     }
   }
-  
+
   $canBrowse = $perm.permissions.BROWSE_PROJECTS.havePermission
   $canEdit   = $perm.permissions.EDIT_ISSUES.havePermission
   Write-Host "🔑 Edit permission: $canEdit"
@@ -699,12 +630,6 @@ foreach ($issue in $allIssues) {
     Write-Host "❌ No 'Edit Issues' permission on $issueKey. Skipping."
     continue
   }
-
-  # --- C1) (Removed) Field name map lookup ---
-  # This used to fetch $jiraBaseUrl/.../issue/$issueId?expand=names purely to print a
-  # debug map of customfield IDs to names. It wasn't used anywhere in the update logic,
-  # but it was an extra HTTP round trip on every single issue. If you need to re-check
-  # field name mappings, do it once ad hoc rather than on every run.
 
 # --- C2) Check which fields are editable on this issue ---
 $editMeta = $null
@@ -724,7 +649,7 @@ try {
 
    try { $dataProd = Invoke-RestMethod -Uri $urlProd -Headers $headerExtProd -Method Get } catch { Show-HttpError $_ "PROD GSS call failed for VIN $vin"; $dataProd = $null }
   try { $dataMkt  = Invoke-RestMethod -Uri $urlMkt  -Headers $headerExtMkt  -Method Get } catch { Show-HttpError $_ "MKT/STAGE GSS call failed for VIN $vin"; $dataMkt  = $null }
-  
+
   if (-not $dataProd -and -not $dataMkt) {
     Write-Host "❌ No data from either API for VIN $vin"
     continue
@@ -751,7 +676,7 @@ try {
     }
   }
   try { $ravenRootId = [string]$chosen.devices.tdac } catch {}
-  
+
   Write-Host ("🧪 Raven root id from GSS (devices.tdac): '{0}'" -f (($ravenRootId | Out-String).Trim()))
   # Defensive logs in case shapes vary
   Write-Host "🌎 Source chosen: $envType"
@@ -865,8 +790,17 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
     try { $engineHours = [Math]::Round([double]$engineHoursRaw, 2) } catch { $engineHours = $null }
   }
 
+  # Guard: engine hours can't go below Starting Hours. A lower reading means GSS returned
+  # the wrong source/unit for this VIN (e.g. PREC-8114 got 204.80 vs Start 3191), so ignore it.
+  $startNumExisting = $null
+  try { if (-not [string]::IsNullOrWhiteSpace([string]$existingStartHours)) { $startNumExisting = [double]$existingStartHours } } catch {}
+  if ($null -ne $engineHours -and $null -ne $startNumExisting -and $engineHours -lt $startNumExisting) {
+    Write-Host "⚠️ GSS engine hours ($engineHours) are below Starting hours ($startNumExisting) for $issueKey -- ignoring this reading."
+    $engineHours = $null
+  }
+
   if ($null -eq $engineHours) {
-    Write-Host "⚠️ No numeric Engine Hours from GSS for $issueKey; skipping vehicle-hours update."
+    Write-Host "⚠️ No usable Engine Hours from GSS for $issueKey; skipping vehicle-hours update."
   } else {
     Write-Host "⏱️ GSS Engine Hours for $issueKey`: $engineHours"
 
@@ -884,9 +818,8 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
       Write-Host "🚩 Setting Starting Vehicle Hours ($fieldStartHours) = $($fieldsToSet[$fieldStartHours]) (status = '$currentStatus')"
     }
 
-    # Ending Hours: update every run while not yet Complete. Once Complete, only
-    # write it one more time -- the run where the transition to Complete happened
-    # and nothing has updated Ending Hours since -- then leave it alone for good.
+    # Ending Hours: updated every run. Complete items only get here once (the run right
+    # after they moved to Complete), so that write is their final value.
     # On the same run Starting Hours is first set, force Ending Hours to that same
     # value too, so Total Vehicle Hours comes out to exactly 0 at the start.
     $endHoursToWrite = $null
@@ -894,16 +827,14 @@ if (-not [string]::IsNullOrWhiteSpace($bundleToWrite)) {
       $endHoursToWrite = $startHoursToWrite
       $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
       Write-Host "🚩 Also setting Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours]) to match Starting Hours (Total = 0)"
-    } elseif ($currentStatus -ne $statusComplete) {
-      $endHoursToWrite = $engineHours
-      $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
-      Write-Host "🚩 Updating Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours]) (status = '$currentStatus')"
-    } elseif (-not $vehicleHoursDone) {
-      $endHoursToWrite = $engineHours
-      $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
-      Write-Host "🏁 $issueKey just transitioned to '$statusComplete' -- writing FINAL Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours])"
     } else {
-      Write-Host "ℹ️ $issueKey is already '$statusComplete' and Ending Vehicle Hours was already finalized; not touching it."
+      $endHoursToWrite = $engineHours
+      $fieldsToSet[$fieldEndHours] = $endHoursToWrite.ToString("F2", [System.Globalization.CultureInfo]::InvariantCulture)
+      if ($currentStatus -eq $statusComplete) {
+        Write-Host "🏁 $issueKey is '$statusComplete' -- writing FINAL Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours])"
+      } else {
+        Write-Host "🚩 Updating Ending Vehicle Hours ($fieldEndHours) = $($fieldsToSet[$fieldEndHours]) (status = '$currentStatus')"
+      }
     }
 
     # Total Hours = Ending - Starting, using whichever value we just wrote this run,
