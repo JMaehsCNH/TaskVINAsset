@@ -3,7 +3,7 @@ name: Update Jira Bugs from VIN
 on:
   workflow_dispatch:  # Manual trigger from GitHub UI
   schedule:
-    - cron: '0 */2 * * *'  # Every 2 hours, all day, every day (UTC)
+    - cron: '17 */2 * * *'  # Every 2 hours, all day, every day (UTC)
 
 jobs:
   run-update:
